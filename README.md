@@ -1,3 +1,5 @@
+![FileBox](screenshot.png)
+
 # FileBox
 
 A minimal floating shelf for macOS that holds files, images, and links while you navigate to where they need to go.
