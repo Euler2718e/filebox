@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swift --version)",
+      "Bash(xcode-select -p)",
+      "Bash(swift build *)"
+    ]
+  }
+}
