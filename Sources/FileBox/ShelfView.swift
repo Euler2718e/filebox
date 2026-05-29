@@ -45,13 +45,30 @@ struct ShelfView: View {
             Spacer()
             if !shelf.files.isEmpty {
                 Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { shelf.clear() }
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        if shelf.selectedIDs.count == shelf.files.count {
+                            shelf.clearSelection()
+                        } else {
+                            shelf.selectAll()
+                        }
+                    }
                 } label: {
-                    Text("Clear")
-                        .font(.system(size: 10))
+                    Image(systemName: shelf.selectedIDs.count == shelf.files.count ? "checkmark.circle.fill" : "checkmark.circle")
+                        .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
+                .help(shelf.selectedIDs.count == shelf.files.count ? "Deselect all" : "Select all")
+
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { shelf.clear() }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear")
             }
         }
         .padding(.horizontal, 14)
@@ -71,11 +88,21 @@ struct ShelfView: View {
     private var fileList: some View {
         VStack(spacing: 2) {
             ForEach(shelf.files) { file in
-                FileRowView(file: file) {
+                FileRowView(
+                    file: file,
+                    isSelected: shelf.selectedIDs.contains(file.id),
+                    dragFiles: shelf.filesForDrag(startingWith: file),
+                    onToggleSelection: {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            shelf.toggleSelection(file)
+                        }
+                    },
+                    onRemove: {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
                         shelf.remove(file)
                     }
-                }
+                    }
+                )
                 .transition(.asymmetric(
                     insertion: .move(edge: .top).combined(with: .opacity),
                     removal: .move(edge: .trailing).combined(with: .opacity)
@@ -89,23 +116,52 @@ struct ShelfView: View {
     // MARK: - Drop handling
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var urlProviders: [(NSItemProvider, String)] = []
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                loadFileURL(from: provider)
+                urlProviders.append((provider, UTType.fileURL.identifier))
             } else if provider.canLoadObject(ofClass: NSImage.self) {
                 loadImage(from: provider)
             } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                loadURL(from: provider)
+                urlProviders.append((provider, UTType.url.identifier))
             }
         }
+        loadURLs(from: urlProviders)
         return true
     }
 
-    private func loadFileURL(from provider: NSItemProvider) {
-        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-            guard let url = url(from: item) else { return }
+    private func loadURLs(from providers: [(NSItemProvider, String)]) {
+        guard !providers.isEmpty else { return }
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var urls: [URL] = []
+
+        for (provider, typeIdentifier) in providers {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { item, _ in
+                if let url = url(from: item) {
+                    lock.lock()
+                    urls.append(url)
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            guard !urls.isEmpty else { return }
+            var seen = Set<String>()
+            let uniqueURLs = urls.filter { url in
+                let key = ShelfFile.duplicateKey(for: url)
+                guard !seen.contains(key) else { return false }
+                seen.insert(key)
+                return true
+            }
+            guard !uniqueURLs.isEmpty else { return }
             DispatchQueue.main.async {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) { shelf.addFile(url) }
+                withAnimation(.spring(response: 0.22, dampingFraction: 0.85)) {
+                    shelf.addFiles(uniqueURLs)
+                }
             }
         }
     }
@@ -119,18 +175,11 @@ struct ShelfView: View {
         }
     }
 
-    private func loadURL(from provider: NSItemProvider) {
-        provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
-            guard let u = url(from: item) else { return }
-            DispatchQueue.main.async {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) { shelf.addURL(u) }
-            }
-        }
-    }
-
     private func url(from item: NSSecureCoding?) -> URL? {
         if let u = item as? URL { return u }
         if let d = item as? Data { return URL(dataRepresentation: d, relativeTo: nil, isAbsolute: true) }
+        if let s = item as? String { return URL(string: s) ?? URL(fileURLWithPath: s) }
+        if let s = item as? NSString { return URL(string: s as String) ?? URL(fileURLWithPath: s as String) }
         return nil
     }
 }
@@ -154,24 +203,42 @@ struct WindowMoveHandle: NSViewRepresentable {
 
 struct FileRowView: View {
     let file: ShelfFile
+    let isSelected: Bool
+    let dragFiles: [ShelfFile]
+    let onToggleSelection: () -> Void
     let onRemove: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 9) {
-            Image(nsImage: file.icon)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 22, height: 22)
-                .clipShape(RoundedRectangle(cornerRadius: file.isTemp ? 4 : 0))
+            Button(action: onToggleSelection) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 13))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.white.opacity(0.35))
+            }
+            .buttonStyle(.plain)
+            .help(isSelected ? "Deselect" : "Select")
 
-            Text(file.name)
-                .font(.system(size: 12))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundStyle(.primary)
+            ZStack {
+                HStack(spacing: 9) {
+                    Image(nsImage: file.icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 22, height: 22)
+                        .clipShape(RoundedRectangle(cornerRadius: file.isTemp ? 4 : 0))
 
-            Spacer()
+                    Text(file.name)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.primary)
+
+                    Spacer()
+                }
+                MultiFileDragSource(files: dragFiles)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             if isHovered {
                 Button(action: onRemove) {
@@ -188,13 +255,62 @@ struct FileRowView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.white.opacity(isHovered ? 0.06 : 0))
+                .fill(Color.white.opacity(isSelected ? 0.10 : (isHovered ? 0.06 : 0)))
         )
         .padding(.horizontal, 6)
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.12)) { isHovered = hovering }
         }
-        .onDrag { NSItemProvider(object: file.url as NSURL) }
+    }
+}
+
+struct MultiFileDragSource: NSViewRepresentable {
+    let files: [ShelfFile]
+
+    func makeNSView(context: Context) -> DragSourceView {
+        let view = DragSourceView()
+        view.files = files
+        return view
+    }
+
+    func updateNSView(_ nsView: DragSourceView, context: Context) {
+        nsView.files = files
+    }
+
+    final class DragSourceView: NSView, NSDraggingSource {
+        var files: [ShelfFile] = []
+        private var mouseDownEvent: NSEvent?
+
+        override func mouseDown(with event: NSEvent) {
+            mouseDownEvent = event
+            super.mouseDown(with: event)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard !files.isEmpty, let mouseDownEvent else { return }
+            let distance = hypot(event.locationInWindow.x - mouseDownEvent.locationInWindow.x,
+                                 event.locationInWindow.y - mouseDownEvent.locationInWindow.y)
+            guard distance >= 3 else { return }
+
+            let draggingItems = files.map { file -> NSDraggingItem in
+                let item = NSDraggingItem(pasteboardWriter: file.url as NSURL)
+                let icon = file.icon
+                let size = NSSize(width: 32, height: 32)
+                let origin = NSPoint(
+                    x: mouseDownEvent.locationInWindow.x - size.width / 2,
+                    y: mouseDownEvent.locationInWindow.y - size.height / 2
+                )
+                item.setDraggingFrame(NSRect(origin: origin, size: size), contents: icon)
+                return item
+            }
+            beginDraggingSession(with: draggingItems, event: mouseDownEvent, source: self)
+            self.mouseDownEvent = nil
+        }
+
+        func draggingSession(_ session: NSDraggingSession,
+                             sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+            context == .outsideApplication ? [.copy, .move] : .copy
+        }
     }
 }

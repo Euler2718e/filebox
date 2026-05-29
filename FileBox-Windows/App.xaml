@@ -1,0 +1,14 @@
+<Application x:Class="FileBox.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown">
+    <!--
+        ShutdownMode=OnExplicitShutdown mirrors NSApp.setActivationPolicy(.accessory):
+        the process keeps running even when the floating window is hidden,
+        living only in the system tray — identical to the macOS app's behaviour.
+
+        No StartupUri — the window is created manually in App.OnStartup,
+        mirroring applicationDidFinishLaunching in AppDelegate.swift.
+    -->
+    <Application.Resources/>
+</Application>

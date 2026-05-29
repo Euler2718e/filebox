@@ -3,7 +3,8 @@
     "allow": [
       "Bash(swift --version)",
       "Bash(xcode-select -p)",
-      "Bash(swift build *)"
+      "Bash(swift build *)",
+      "Bash(swift package *)"
     ]
   }
 }

@@ -1,0 +1,119 @@
+<UserControl x:Class="FileBox.ShelfView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:FileBox"
+             AllowDrop="True"
+             Drop="OnDrop"
+             DragEnter="OnDragEnter"
+             DragLeave="OnDragLeave"
+             DragOver="OnDragOver">
+
+    <!--
+        Mirrors ShelfView.swift (SwiftUI View).
+
+        Background colour:  Color(red:0.10, green:0.10, blue:0.12, opacity:0.94)
+                            → #F01A1A1F  (ARGB)
+        Normal border:      Color.white.opacity(0.10) → #1AFFFFFF
+        Drag-targeted border: Color.white.opacity(0.40) → #66FFFFFF  (toggled in code-behind)
+        Corner radius: 14
+    -->
+
+    <Grid ClipToBounds="True">
+
+        <!-- Dark rounded background + subtle border (toggled on drag-over) -->
+        <Border x:Name="BgBorder"
+                CornerRadius="14"
+                Background="#F01A1A1F"
+                BorderThickness="1"
+                BorderBrush="#1AFFFFFF"/>
+
+        <!-- Content stack -->
+        <DockPanel LastChildFill="True">
+
+            <!-- ── Header ── (drag handle for repositioning the panel) ─── -->
+            <!--
+                Mirrors the header view in ShelfView.swift.
+                WindowMoveHandle (NSView.mouseDownCanMoveWindow=true) → DragMove() in code-behind.
+                Only fires if the click does not originate from a Button, so the Clear button
+                still works normally.
+            -->
+            <Grid x:Name="HeaderGrid"
+                  DockPanel.Dock="Top"
+                  Margin="14,12,14,0"
+                  Cursor="SizeAll"
+                  MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Tray icon glyph — mirrors Image(systemName:"tray") -->
+                <TextBlock Grid.Column="0"
+                           Text="&#x2A1A;"
+                           FontSize="10"
+                           Foreground="#88FFFFFF"
+                           VerticalAlignment="Center"
+                           Margin="0,0,5,0"/>
+
+                <!-- "FileBox" title -->
+                <TextBlock Grid.Column="1"
+                           Text="FileBox"
+                           FontSize="11"
+                           FontWeight="SemiBold"
+                           Foreground="#88FFFFFF"
+                           VerticalAlignment="Center"/>
+
+                <!-- Clear button — visible only when shelf is non-empty -->
+                <Button x:Name="ClearBtn"
+                        Grid.Column="2"
+                        Content="Clear"
+                        FontSize="10"
+                        Foreground="#44FFFFFF"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Padding="3,1"
+                        Cursor="Hand"
+                        Visibility="Collapsed"
+                        Click="ClearBtn_Click"
+                        MouseLeftButtonDown="StopBubble"/>
+            </Grid>
+
+            <!-- Gap between header and body (mirrors .padding(.bottom, 6/8)) -->
+            <Border DockPanel.Dock="Top" Height="6"/>
+
+            <!-- ── Empty hint ── -->
+            <!--
+                "Drop here  ·  ⌥G for Finder selection"
+                → Windows equivalent replaces ⌥G with Alt+G and Finder with Explorer.
+                isDragTargeted ? "Release to add" : normal text  — toggled in code-behind.
+            -->
+            <TextBlock x:Name="EmptyHint"
+                       DockPanel.Dock="Top"
+                       Text="Drop here  ·  Alt+G for Explorer selection"
+                       FontSize="10"
+                       Foreground="#40FFFFFF"
+                       Margin="14,0,14,12"
+                       TextWrapping="NoWrap"/>
+
+            <!-- ── File list ── -->
+            <!--
+                Mirrors the fileList VStack + ForEach in ShelfView.swift.
+                ItemsSource bound to ShelfViewModel.Files (ObservableCollection).
+                Each row is a FileRowView UserControl.
+            -->
+            <ItemsControl x:Name="FileList"
+                          DockPanel.Dock="Top"
+                          Visibility="Collapsed"
+                          Margin="0,0,0,8"
+                          IsHitTestVisible="True">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type local:ShelfFile}">
+                        <local:FileRowView FileItem="{Binding}"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+        </DockPanel>
+    </Grid>
+</UserControl>

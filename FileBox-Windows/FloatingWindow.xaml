@@ -1,0 +1,26 @@
+<Window x:Class="FileBox.FloatingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FileBox"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Width="240"
+        Height="60"
+        Visibility="Hidden">
+
+    <!--
+        Mirrors FloatingPanel.swift:
+          styleMask: [.borderless, .nonactivatingPanel]   → WindowStyle=None + WS_EX_NOACTIVATE (set in code-behind)
+          isOpaque = false / backgroundColor = .clear     → AllowsTransparency=True, Background=Transparent
+          level = .floating                               → Topmost=True
+          collectionBehavior [.canJoinAllSpaces, ...]     → no WPF equivalent; Topmost handles this adequately
+          hidesOnDeactivate = false                       → default WPF behaviour
+    -->
+
+    <local:ShelfView x:Name="ShelfViewControl"/>
+
+</Window>

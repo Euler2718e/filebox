@@ -16,7 +16,7 @@ class FloatingPanel: NSPanel {
         hasShadow = true
         isMovableByWindowBackground = false   // header-only drag handle prevents window moving during file drag-outs
         hidesOnDeactivate = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
         let hosting = NSHostingView(rootView: ShelfView(shelf: shelf))
         hosting.wantsLayer = true
