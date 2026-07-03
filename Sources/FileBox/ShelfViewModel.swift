@@ -2,24 +2,30 @@ import AppKit
 import Combine
 import UniformTypeIdentifiers
 
+private enum ShelfDefaults {
+    static let defaultConversionFormat = "FileBoxDefaultConversionFormat"
+}
+
 struct ShelfFile: Identifiable, Equatable {
     let id = UUID()
     let url: URL
     let name: String
     let icon: NSImage
     let isTemp: Bool
+    let isImage: Bool
     let duplicateKey: String
     let duplicateKeys: Set<String>
 
     init(url: URL, isTemp: Bool = false) {
         self.url = url
         self.isTemp = isTemp
+        self.isImage = isTemp || Self.isImageFile(url)
         self.duplicateKeys = Self.duplicateKeys(for: url)
         self.duplicateKey = duplicateKeys.sorted().first ?? Self.normalizedURLString(url)
         if url.scheme == "http" || url.scheme == "https" {
             self.name = url.host ?? url.absoluteString
             self.icon = NSImage(systemSymbolName: "link", accessibilityDescription: nil) ?? NSImage()
-        } else if isTemp, let img = NSImage(contentsOf: url) {
+        } else if isImage, let img = NSImage(contentsOf: url) {
             self.name = url.lastPathComponent
             self.icon = img
         } else {
@@ -110,6 +116,12 @@ struct ShelfFile: Identifiable, Equatable {
         }
     }
 
+    private static func isImageFile(_ url: URL) -> Bool {
+        guard url.isFileURL,
+              let type = UTType(filenameExtension: url.pathExtension) else { return false }
+        return type.conforms(to: .image)
+    }
+
     private static var iconCache: [String: NSImage] = [:]
 
     private static func icon(for url: URL) -> NSImage {
@@ -125,13 +137,50 @@ struct ShelfFile: Identifiable, Equatable {
 class ShelfViewModel: ObservableObject {
     @Published var files: [ShelfFile] = []
     @Published var selectedIDs: Set<UUID> = []
+    @Published var usesCustomPosition = false
+    @Published var activeFileID: UUID?
+    @Published private(set) var convertingFileIDs: Set<UUID> = []
+    @Published var conversionMessage: String?
+    @Published var defaultConversionFormat: ConversionFormat? {
+        didSet { persistDefaultConversionFormat() }
+    }
+
+    private let conversionService: ImageConversionService
+    private let userDefaults: UserDefaults
+    private let conversionQueue = DispatchQueue(label: "com.jakob.filebox.image-conversion", qos: .userInitiated)
     private var tempURLs: [URL] = []
+
+    init(
+        conversionService: ImageConversionService = ImageConversionService(),
+        userDefaults: UserDefaults = .standard
+    ) {
+        self.conversionService = conversionService
+        self.userDefaults = userDefaults
+        if let rawValue = userDefaults.string(forKey: ShelfDefaults.defaultConversionFormat) {
+            self.defaultConversionFormat = ConversionFormat(rawValue: rawValue)
+        } else {
+            self.defaultConversionFormat = nil
+        }
+    }
+
+    var activeFile: ShelfFile? {
+        guard !files.isEmpty else { return nil }
+        if let activeFileID, let active = files.first(where: { $0.id == activeFileID }) {
+            return active
+        }
+        return files.last
+    }
+
+    var availableDefaultConversionFormats: [ConversionFormat] {
+        conversionService.writableFormats
+    }
 
     func addFile(_ url: URL) {
         addFiles([url])
     }
 
-    func addFiles(_ urls: [URL]) {
+    @discardableResult
+    func addFiles(_ urls: [URL]) -> [ShelfFile] {
         var seen = Set(files.flatMap(\.duplicateKeys))
         let newFiles = urls.compactMap { url -> ShelfFile? in
             let file = ShelfFile(url: url)
@@ -139,8 +188,11 @@ class ShelfViewModel: ObservableObject {
             seen.formUnion(file.duplicateKeys)
             return file
         }
-        guard !newFiles.isEmpty else { return }
+        guard !newFiles.isEmpty else { return [] }
         files.append(contentsOf: newFiles)
+        activeFileID = newFiles.last?.id
+        applyDefaultConversion(to: newFiles)
+        return newFiles
     }
 
     func addImage(_ image: NSImage) {
@@ -151,7 +203,10 @@ class ShelfViewModel: ObservableObject {
         guard let data = rep.representation(using: .png, properties: [:]),
               (try? data.write(to: url)) != nil else { return }
         tempURLs.append(url)
-        files.append(ShelfFile(url: url, isTemp: true))
+        let file = ShelfFile(url: url, isTemp: true)
+        files.append(file)
+        activeFileID = file.id
+        applyDefaultConversion(to: [file])
     }
 
     func addURL(_ url: URL) {
@@ -161,14 +216,22 @@ class ShelfViewModel: ObservableObject {
     func remove(_ file: ShelfFile) {
         files.removeAll { $0.id == file.id }
         selectedIDs.remove(file.id)
+        convertingFileIDs.remove(file.id)
+        if activeFileID == file.id {
+            activeFileID = files.last?.id
+        }
     }
 
     func clear() {
         files.removeAll()
         selectedIDs.removeAll()
+        activeFileID = nil
+        convertingFileIDs.removeAll()
+        conversionMessage = nil
     }
 
     func toggleSelection(_ file: ShelfFile) {
+        activeFileID = file.id
         if selectedIDs.contains(file.id) {
             selectedIDs.remove(file.id)
         } else {
@@ -178,6 +241,7 @@ class ShelfViewModel: ObservableObject {
 
     func selectAll() {
         selectedIDs = Set(files.map(\.id))
+        activeFileID = files.last?.id
     }
 
     func clearSelection() {
@@ -192,7 +256,87 @@ class ShelfViewModel: ObservableObject {
         return [file]
     }
 
+    func activate(_ file: ShelfFile) {
+        activeFileID = file.id
+    }
+
+    func currentFormatLabel(for file: ShelfFile) -> String {
+        conversionService.currentFormatLabel(for: file.url)
+    }
+
+    func conversionOptions(for file: ShelfFile) -> [ConversionFormat] {
+        conversionService.supportedOutputFormats(for: file.url)
+    }
+
+    func isConverting(_ file: ShelfFile) -> Bool {
+        convertingFileIDs.contains(file.id)
+    }
+
+    func convert(fileID: UUID, to format: ConversionFormat) {
+        guard let sourceFile = files.first(where: { $0.id == fileID }),
+              !convertingFileIDs.contains(fileID) else { return }
+
+        guard conversionOptions(for: sourceFile).contains(format) else {
+            conversionMessage = "No \(format.displayName) copy available"
+            return
+        }
+
+        activeFileID = fileID
+        conversionMessage = nil
+        convertingFileIDs.insert(fileID)
+
+        conversionQueue.async { [weak self] in
+            guard let self else { return }
+
+            do {
+                let convertedURL = try self.conversionService.convert(sourceFile.url, to: format)
+                DispatchQueue.main.async {
+                    self.finishConversion(convertedURL, after: fileID)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.convertingFileIDs.remove(fileID)
+                    self.conversionMessage = "Could not convert to \(format.displayName)"
+                }
+            }
+        }
+    }
+
+    func insertConvertedFile(_ url: URL, after sourceID: UUID) {
+        finishConversion(url, after: sourceID)
+    }
+
     func cleanup() {
         tempURLs.forEach { try? FileManager.default.removeItem(at: $0) }
+    }
+
+    private func finishConversion(_ url: URL, after sourceID: UUID) {
+        convertingFileIDs.remove(sourceID)
+        tempURLs.append(url)
+
+        let converted = ShelfFile(url: url, isTemp: true)
+        if let sourceIndex = files.firstIndex(where: { $0.id == sourceID }) {
+            files.insert(converted, at: min(sourceIndex + 1, files.endIndex))
+        } else {
+            files.append(converted)
+        }
+
+        activeFileID = converted.id
+        conversionMessage = "Created \(converted.name)"
+    }
+
+    private func applyDefaultConversion(to newFiles: [ShelfFile]) {
+        guard let defaultConversionFormat else { return }
+        for file in newFiles where conversionOptions(for: file).contains(defaultConversionFormat) {
+            convert(fileID: file.id, to: defaultConversionFormat)
+        }
+    }
+
+    private func persistDefaultConversionFormat() {
+        if let defaultConversionFormat {
+            userDefaults.set(defaultConversionFormat.rawValue, forKey: ShelfDefaults.defaultConversionFormat)
+        } else {
+            userDefaults.removeObject(forKey: ShelfDefaults.defaultConversionFormat)
+        }
     }
 }

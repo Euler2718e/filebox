@@ -12,11 +12,21 @@ private let shelvableTypes: [NSPasteboard.PasteboardType] = [
     .init("public.url"),
 ]
 
+private enum FileBoxDefaults {
+    static let usesCustomPosition = "FileBoxUsesCustomPosition"
+    static let customFrame = "FileBoxCustomFrame"
+    static let autoAddScreenshots = "FileBoxAutoAddScreenshots"
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: FloatingPanel!
     private let shelf = ShelfViewModel()
     private var statusItem: NSStatusItem!
     private var cancellables = Set<AnyCancellable>()
+
+    // Auto-add screenshots
+    private let screenshotWatcher = ScreenshotWatcher()
+    private var screenshotMenuItem: NSMenuItem?
 
     // Drag-show state
     private var mouseDownMonitor: Any?
@@ -37,16 +47,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var collisionTimer: Timer?
     private var collisionCheckInFlight = false   // prevents stacking background scans
     private var workspaceObserver: Any?
+    private var spaceObserver: Any?
+    private var positionDragBeganObserver: Any?
+    private var customPositionObserver: Any?
+    private var panelMoveObserver: Any?
     private var dodgeHoldUntil = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        UserDefaults.standard.register(defaults: [FileBoxDefaults.autoAddScreenshots: true])
         setupPanel()
         setupMenuBar()
         setupDragMonitors()
         setupHotKey()
         observeShelf()
+        setupScreenshotWatcher()
         setupWorkspaceObserver()
+        setupPositionObservers()
         collisionTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: true) { [weak self] _ in
             self?.followActiveScreen(preferMouse: self?.isDragging == true)
             self?.checkAndDodge()
@@ -55,9 +72,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         shelf.cleanup()
+        screenshotWatcher.stop()
         collisionTimer?.invalidate()
         if let obs = workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
+        }
+        if let obs = spaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+        }
+        if let obs = positionDragBeganObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        if let obs = customPositionObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        if let obs = panelMoveObserver {
+            NotificationCenter.default.removeObserver(obs)
         }
     }
 
@@ -65,7 +95,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupPanel() {
         panel = FloatingPanel(shelf: shelf)
-        if let screen = activeContextScreen(preferMouse: false) ?? NSScreen.main {
+        shelf.usesCustomPosition = UserDefaults.standard.bool(forKey: FileBoxDefaults.usesCustomPosition)
+        if shelf.usesCustomPosition, let frame = storedCustomFrame() {
+            setCustomHome(frame)
+        } else if let screen = activeContextScreen(preferMouse: false) ?? NSScreen.main {
             setHome(on: screen)
         }
         homeAnchor = CGPoint(x: panel.frame.maxX, y: panel.frame.maxY)
@@ -86,7 +119,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func idealHeight(for count: Int) -> CGFloat {
-        count == 0 ? 60 : min(CGFloat(40 + count * 36), 340)
+        count == 0 ? 60 : min(max(CGFloat(40 + count * 36), 156), 340)
     }
 
     private func observeShelf() {
@@ -104,6 +137,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    // MARK: - Auto-add screenshots
+
+    private func setupScreenshotWatcher() {
+        screenshotWatcher.onScreenshot = { [weak self] url in
+            self?.shelf.addFile(url)
+        }
+        if UserDefaults.standard.bool(forKey: FileBoxDefaults.autoAddScreenshots) {
+            screenshotWatcher.start()
+        }
     }
 
     // MARK: - Drag detection
@@ -146,7 +190,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isDragging = true
         hideTimer?.invalidate()
         // Snap to the active context so the shelf appears on the monitor being used.
-        if let screen = activeContextScreen(preferMouse: true) {
+        if shelf.usesCustomPosition {
+            restoreCustomPosition()
+        } else if let screen = activeContextScreen(preferMouse: true) {
             moveToScreen(screen, animated: false)
         }
         panel.showAnimated()
@@ -170,7 +216,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "tray.2.fill", accessibilityDescription: "FileBox")
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Grab Finder Selection  ⌥G", action: #selector(grabFinderSelection), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Grab Finder Selection  ⌘⌥G", action: #selector(grabFinderSelection), keyEquivalent: ""))
+
+        let screenshotItem = NSMenuItem(title: "Auto-add Screenshots", action: #selector(toggleAutoScreenshots), keyEquivalent: "")
+        screenshotItem.state = UserDefaults.standard.bool(forKey: FileBoxDefaults.autoAddScreenshots) ? .on : .off
+        screenshotMenuItem = screenshotItem
+        menu.addItem(screenshotItem)
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Show Panel", action: #selector(showPanel), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Clear All", action: #selector(clearAll), keyEquivalent: ""))
@@ -180,7 +232,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showPanel() {
-        if let screen = activeContextScreen(preferMouse: false) {
+        if shelf.usesCustomPosition {
+            restoreCustomPosition()
+        } else if let screen = activeContextScreen(preferMouse: false) {
             moveToScreen(screen, animated: false)
         }
         panel.showAnimated()
@@ -188,23 +242,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func clearAll() { shelf.clear() }
     @objc private func quit() { NSApp.terminate(nil) }
 
+    @objc private func toggleAutoScreenshots(_ sender: NSMenuItem) {
+        let enabled = !UserDefaults.standard.bool(forKey: FileBoxDefaults.autoAddScreenshots)
+        UserDefaults.standard.set(enabled, forKey: FileBoxDefaults.autoAddScreenshots)
+        sender.state = enabled ? .on : .off
+        if enabled { screenshotWatcher.start() } else { screenshotWatcher.stop() }
+    }
+
     @objc private func grabFinderSelection() {
         grabFinderFiles()
-        if let screen = activeContextScreen(preferMouse: false) {
+        if shelf.usesCustomPosition {
+            restoreCustomPosition()
+        } else if let screen = activeContextScreen(preferMouse: false) {
             moveToScreen(screen, animated: false)
         }
         panel.showAnimated()
     }
 
-    // MARK: - Global hot key (⌥G)
+    // MARK: - Global hot key (⌘⌥G)
 
     private func setupHotKey() {
         NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .option,
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .option],
                   event.keyCode == 5 else { return }
             DispatchQueue.main.async {
                 self?.grabFinderFiles()
-                if let screen = self?.activeContextScreen(preferMouse: false) {
+                if self?.shelf.usesCustomPosition == true {
+                    self?.restoreCustomPosition()
+                } else if let screen = self?.activeContextScreen(preferMouse: false) {
                     self?.moveToScreen(screen, animated: false)
                 }
                 self?.panel.showAnimated()
@@ -226,9 +291,60 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func setupPositionObservers() {
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleActiveSpaceChange()
+        }
+
+        positionDragBeganObserver = NotificationCenter.default.addObserver(
+            forName: .fileBoxCustomPositionDragBegan,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.beginCustomPositionDrag()
+        }
+
+        customPositionObserver = NotificationCenter.default.addObserver(
+            forName: .fileBoxCustomPositionDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let value = note.object as? NSValue else { return }
+            self?.finishCustomPositionDrag(value.rectValue)
+        }
+
+        panelMoveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.shelf.usesCustomPosition else { return }
+            self.saveCustomPosition(self.panel.frame)
+        }
+    }
+
+    private func handleActiveSpaceChange() {
+        guard !shelf.usesCustomPosition else {
+            restoreCustomPosition()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+            guard let self else { return }
+            self.followActiveScreen(preferMouse: true)
+            if self.panel.isVisible {
+                self.panel.orderFrontRegardless()
+            }
+        }
+    }
+
     /// Moves the panel to the screen that currently contains the user's active work.
     /// No-ops instantly when already on the right screen.
     private func followActiveScreen(preferMouse: Bool) {
+        guard !shelf.usesCustomPosition else { return }
         guard let target = activeContextScreen(preferMouse: preferMouse) else { return }
         moveToScreen(target, animated: panel.isVisible)
     }
@@ -279,6 +395,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Moves the panel's home position to the top-right of `screen`.
     /// Animates when the panel is already visible; silent reposition otherwise.
     private func moveToScreen(_ screen: NSScreen, animated: Bool) {
+        guard !shelf.usesCustomPosition else { return }
         let newFrame = frameForHome(on: screen)
         homeAnchor = CGPoint(x: newFrame.maxX, y: newFrame.maxY)
         if let cur = panel.screen, cur.frame == screen.frame {
@@ -304,6 +421,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let frame = frameForHome(on: screen)
         panel.setFrame(frame, display: false)
         homeAnchor = CGPoint(x: frame.maxX, y: frame.maxY)
+    }
+
+    private func setCustomHome(_ frame: NSRect) {
+        let clamped = clampedToVisibleScreen(frame)
+        panel.setFrame(clamped, display: false)
+        homeAnchor = CGPoint(x: clamped.maxX, y: clamped.maxY)
+    }
+
+    private func beginCustomPositionDrag() {
+        shelf.usesCustomPosition = true
+        UserDefaults.standard.set(true, forKey: FileBoxDefaults.usesCustomPosition)
+        isDodging = false
+    }
+
+    private func finishCustomPositionDrag(_ frame: NSRect) {
+        shelf.usesCustomPosition = true
+        UserDefaults.standard.set(true, forKey: FileBoxDefaults.usesCustomPosition)
+        saveCustomPosition(frame)
+        restoreCustomPosition()
+    }
+
+    private func restoreCustomPosition() {
+        guard shelf.usesCustomPosition, let frame = storedCustomFrame() else { return }
+        setCustomHome(frame)
+    }
+
+    private func saveCustomPosition(_ frame: NSRect) {
+        let clamped = clampedToVisibleScreen(frame)
+        homeAnchor = CGPoint(x: clamped.maxX, y: clamped.maxY)
+        UserDefaults.standard.set(NSStringFromRect(clamped), forKey: FileBoxDefaults.customFrame)
+    }
+
+    private func storedCustomFrame() -> NSRect? {
+        guard let string = UserDefaults.standard.string(forKey: FileBoxDefaults.customFrame) else { return nil }
+        let frame = NSRectFromString(string)
+        guard frame.width > 0, frame.height > 0 else { return nil }
+        return frame
+    }
+
+    private func clampedToVisibleScreen(_ frame: NSRect) -> NSRect {
+        let screen = screenContaining(NSPoint(x: frame.midX, y: frame.midY)) ?? NSScreen.main
+        guard let visible = screen?.visibleFrame else { return frame }
+        var clamped = frame
+        clamped.origin.x = min(max(clamped.origin.x, visible.minX + 8), visible.maxX - clamped.width - 8)
+        clamped.origin.y = min(max(clamped.origin.y, visible.minY + 8), visible.maxY - clamped.height - 8)
+        return clamped
     }
 
     private func frameForHome(on screen: NSScreen) -> NSRect {
@@ -501,4 +664,9 @@ private extension CGRect {
         guard !isNull, !isEmpty else { return 0 }
         return width * height
     }
+}
+
+private extension Notification.Name {
+    static let fileBoxCustomPositionDragBegan = Notification.Name("FileBoxCustomPositionDragBegan")
+    static let fileBoxCustomPositionDidChange = Notification.Name("FileBoxCustomPositionDidChange")
 }

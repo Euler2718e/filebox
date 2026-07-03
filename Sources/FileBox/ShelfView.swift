@@ -18,14 +18,7 @@ struct ShelfView: View {
                     lineWidth: 1
                 )
 
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                if shelf.files.isEmpty {
-                    emptyHint
-                } else {
-                    fileList
-                }
-            }
+            content
         }
         .onDrop(of: [.fileURL, .image, .tiff, .png, .jpeg, .url], isTargeted: $isDragTargeted, perform: handleDrop)
         .animation(.spring(response: 0.26, dampingFraction: 0.80), value: isDragTargeted)
@@ -33,6 +26,27 @@ struct ShelfView: View {
     }
 
     // MARK: - Sub-views
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if shelf.files.isEmpty {
+                emptyHint
+            } else {
+                HStack(alignment: .top, spacing: 0) {
+                    fileList
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                    Divider()
+                        .background(Color.white.opacity(0.10))
+                        .padding(.vertical, 4)
+
+                    inspector
+                        .frame(width: 128, alignment: .topLeading)
+                }
+            }
+        }
+    }
 
     private var header: some View {
         HStack(spacing: 6) {
@@ -43,6 +57,12 @@ struct ShelfView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
             Spacer()
+            defaultFormatMenu
+
+            PositionDragHandle(isActive: shelf.usesCustomPosition)
+                .frame(width: 18, height: 18)
+                .help("Hold and drag to set FileBox position")
+
             if !shelf.files.isEmpty {
                 Button {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
@@ -74,11 +94,46 @@ struct ShelfView: View {
         .padding(.horizontal, 14)
         .padding(.top, 12)
         .padding(.bottom, shelf.files.isEmpty ? 8 : 6)
-        .background(WindowMoveHandle())   // drag this strip to reposition the panel
+    }
+
+    private var defaultFormatMenu: some View {
+        Menu {
+            Button {
+                shelf.defaultConversionFormat = nil
+            } label: {
+                Label("Original", systemImage: shelf.defaultConversionFormat == nil ? "checkmark" : "circle")
+            }
+
+            Divider()
+
+            ForEach(shelf.availableDefaultConversionFormats) { format in
+                Button {
+                    shelf.defaultConversionFormat = format
+                } label: {
+                    Label(format.displayName, systemImage: shelf.defaultConversionFormat == format ? "checkmark" : "circle")
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(shelf.defaultConversionFormat?.displayName ?? "Original")
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Default conversion format")
     }
 
     private var emptyHint: some View {
-        Text(isDragTargeted ? "Release to add" : "Drop here  ·  ⌥G for Finder selection")
+        Text(isDragTargeted ? "Release to add" : "Drop here  ·  ⌘⌥G for Finder selection")
             .font(.system(size: 10))
             .foregroundStyle(isDragTargeted ? Color.white.opacity(0.55) : Color.white.opacity(0.25))
             .padding(.horizontal, 14)
@@ -91,11 +146,15 @@ struct ShelfView: View {
                 FileRowView(
                     file: file,
                     isSelected: shelf.selectedIDs.contains(file.id),
+                    isActive: shelf.activeFile?.id == file.id,
                     dragFiles: shelf.filesForDrag(startingWith: file),
                     onToggleSelection: {
                         withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                             shelf.toggleSelection(file)
                         }
+                    },
+                    onActivate: {
+                        shelf.activate(file)
                     },
                     onRemove: {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
@@ -111,6 +170,91 @@ struct ShelfView: View {
         }
         .padding(.bottom, 8)
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: shelf.files.map(\.id))
+    }
+
+    private var inspector: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let file = shelf.activeFile {
+                Text("Current")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+
+                HStack(spacing: 5) {
+                    Image(nsImage: file.icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 16, height: 16)
+                        .clipShape(RoundedRectangle(cornerRadius: file.isImage ? 3 : 0))
+
+                    Text(shelf.currentFormatLabel(for: file))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+
+                if shelf.isConverting(file) {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.55)
+                            .frame(width: 12, height: 12)
+                        Text("Converting")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    convertMenu(for: file)
+                }
+
+                if let message = shelf.conversionMessage {
+                    Text(message)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.top, 8)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 8)
+    }
+
+    private func convertMenu(for file: ShelfFile) -> some View {
+        let formats = shelf.conversionOptions(for: file)
+
+        return Group {
+            if formats.isEmpty {
+                Text("No conversion")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            } else {
+                Menu {
+                    ForEach(formats) { format in
+                        Button(format.displayName) {
+                            shelf.convert(fileID: file.id, to: format)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Convert to")
+                            .font(.system(size: 10, weight: .medium))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .menuStyle(.borderlessButton)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: - Drop handling
@@ -160,7 +304,7 @@ struct ShelfView: View {
             guard !uniqueURLs.isEmpty else { return }
             DispatchQueue.main.async {
                 withAnimation(.spring(response: 0.22, dampingFraction: 0.85)) {
-                    shelf.addFiles(uniqueURLs)
+                    _ = shelf.addFiles(uniqueURLs)
                 }
             }
         }
@@ -184,19 +328,80 @@ struct ShelfView: View {
     }
 }
 
-// MARK: - Window drag handle
-//
-// Applied only to the header strip. isMovableByWindowBackground is false on the panel,
-// so ONLY views that return mouseDownCanMoveWindow = true can move it. File rows do not
-// get this, so dragging a file out never accidentally drags the window.
+// MARK: - Position drag handle
 
-struct WindowMoveHandle: NSViewRepresentable {
-    func makeNSView(context: Context) -> HandleView { HandleView() }
-    func updateNSView(_ nsView: HandleView, context: Context) {}
+struct PositionDragHandle: NSViewRepresentable {
+    let isActive: Bool
 
-    class HandleView: NSView {
-        override var mouseDownCanMoveWindow: Bool { true }
+    func makeNSView(context: Context) -> HandleView {
+        let view = HandleView()
+        view.isActive = isActive
+        return view
     }
+
+    func updateNSView(_ nsView: HandleView, context: Context) {
+        nsView.isActive = isActive
+    }
+
+    final class HandleView: NSView {
+        var isActive = false {
+            didSet { needsDisplay = true }
+        }
+        private var mouseDownScreenPoint: NSPoint?
+        private var initialWindowFrame: NSRect?
+
+        override var acceptsFirstResponder: Bool { true }
+
+        override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            let image = NSImage(
+                systemSymbolName: isActive ? "mappin.circle.fill" : "mappin.circle",
+                accessibilityDescription: "Set FileBox position"
+            )
+            image?.isTemplate = true
+            let color = isActive ? NSColor.controlAccentColor : NSColor.white.withAlphaComponent(0.35)
+            color.set()
+            image?.draw(
+                in: bounds.insetBy(dx: 1, dy: 1),
+                from: .zero,
+                operation: .sourceAtop,
+                fraction: 1
+            )
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            guard let window else { return }
+            mouseDownScreenPoint = window.convertPoint(toScreen: event.locationInWindow)
+            initialWindowFrame = window.frame
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            NotificationCenter.default.post(name: .fileBoxCustomPositionDragBegan, object: nil)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let window,
+                  let start = mouseDownScreenPoint,
+                  let initial = initialWindowFrame
+            else { return }
+            let current = window.convertPoint(toScreen: event.locationInWindow)
+            let delta = NSPoint(x: current.x - start.x, y: current.y - start.y)
+            window.setFrameOrigin(NSPoint(x: initial.origin.x + delta.x, y: initial.origin.y + delta.y))
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard let window else { return }
+            NotificationCenter.default.post(
+                name: .fileBoxCustomPositionDidChange,
+                object: NSValue(rect: window.frame)
+            )
+            mouseDownScreenPoint = nil
+            initialWindowFrame = nil
+        }
+    }
+}
+
+private extension Notification.Name {
+    static let fileBoxCustomPositionDragBegan = Notification.Name("FileBoxCustomPositionDragBegan")
+    static let fileBoxCustomPositionDidChange = Notification.Name("FileBoxCustomPositionDidChange")
 }
 
 // MARK: - File row
@@ -204,14 +409,19 @@ struct WindowMoveHandle: NSViewRepresentable {
 struct FileRowView: View {
     let file: ShelfFile
     let isSelected: Bool
+    let isActive: Bool
     let dragFiles: [ShelfFile]
     let onToggleSelection: () -> Void
+    let onActivate: () -> Void
     let onRemove: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 9) {
-            Button(action: onToggleSelection) {
+            Button {
+                onActivate()
+                onToggleSelection()
+            } label: {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 13))
                     .symbolRenderingMode(.hierarchical)
@@ -226,7 +436,7 @@ struct FileRowView: View {
                         .resizable()
                         .interpolation(.high)
                         .frame(width: 22, height: 22)
-                        .clipShape(RoundedRectangle(cornerRadius: file.isTemp ? 4 : 0))
+                        .clipShape(RoundedRectangle(cornerRadius: file.isImage ? 4 : 0))
 
                     Text(file.name)
                         .font(.system(size: 12))
@@ -236,6 +446,8 @@ struct FileRowView: View {
 
                     Spacer()
                 }
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onActivate)
                 MultiFileDragSource(files: dragFiles)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -255,13 +467,20 @@ struct FileRowView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.white.opacity(isSelected ? 0.10 : (isHovered ? 0.06 : 0)))
+                .fill(rowBackground)
         )
         .padding(.horizontal, 6)
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.12)) { isHovered = hovering }
         }
+    }
+
+    private var rowBackground: Color {
+        if isSelected { return Color.white.opacity(0.10) }
+        if isActive { return Color.accentColor.opacity(0.13) }
+        if isHovered { return Color.white.opacity(0.06) }
+        return Color.clear
     }
 }
 

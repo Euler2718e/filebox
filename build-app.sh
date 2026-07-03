@@ -27,6 +27,8 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
     <key>NSHighResolutionCapable</key><true/>
     <key>NSAppleEventsUsageDescription</key>
     <string>FileBox uses Apple Events to read the current Finder selection.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>FileBox adds screenshots you take to the shelf automatically.</string>
 </dict>
 </plist>
 PLIST
