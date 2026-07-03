@@ -33,17 +33,8 @@ struct ShelfView: View {
             if shelf.files.isEmpty {
                 emptyHint
             } else {
-                HStack(alignment: .top, spacing: 0) {
-                    fileList
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-
-                    Divider()
-                        .background(Color.white.opacity(0.10))
-                        .padding(.vertical, 4)
-
-                    inspector
-                        .frame(width: 128, alignment: .topLeading)
-                }
+                fileList
+                conversionStatus
             }
         }
     }
@@ -117,12 +108,12 @@ struct ShelfView: View {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.system(size: 10, weight: .semibold))
-                Text(shelf.defaultConversionFormat?.displayName ?? "Original")
+                Text(shelf.defaultConversionFormat?.displayName ?? "Keep")
                     .font(.system(size: 10, weight: .medium))
                     .lineLimit(1)
             }
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 5)
             .padding(.vertical, 3)
             .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
         }
@@ -148,6 +139,9 @@ struct ShelfView: View {
                     isSelected: shelf.selectedIDs.contains(file.id),
                     isActive: shelf.activeFile?.id == file.id,
                     dragFiles: shelf.filesForDrag(startingWith: file),
+                    formatLabel: shelf.currentFormatLabel(for: file),
+                    conversionOptions: shelf.conversionOptions(for: file),
+                    isConverting: shelf.isConverting(file),
                     onToggleSelection: {
                         withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                             shelf.toggleSelection(file)
@@ -155,6 +149,9 @@ struct ShelfView: View {
                     },
                     onActivate: {
                         shelf.activate(file)
+                    },
+                    onConvert: { format in
+                        shelf.convert(fileID: file.id, to: format)
                     },
                     onRemove: {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
@@ -168,91 +165,20 @@ struct ShelfView: View {
                 ))
             }
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, shelf.conversionMessage == nil ? 8 : 2)
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: shelf.files.map(\.id))
     }
 
-    private var inspector: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let file = shelf.activeFile {
-                Text("Current")
-                    .font(.system(size: 9, weight: .medium))
+    private var conversionStatus: some View {
+        Group {
+            if let message = shelf.conversionMessage {
+                Text(message)
+                    .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
-
-                HStack(spacing: 5) {
-                    Image(nsImage: file.icon)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: 16, height: 16)
-                        .clipShape(RoundedRectangle(cornerRadius: file.isImage ? 3 : 0))
-
-                    Text(shelf.currentFormatLabel(for: file))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                }
-
-                if shelf.isConverting(file) {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.55)
-                            .frame(width: 12, height: 12)
-                        Text("Converting")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    convertMenu(for: file)
-                }
-
-                if let message = shelf.conversionMessage {
-                    Text(message)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .padding(.top, 8)
-        .padding(.horizontal, 10)
-        .padding(.bottom, 8)
-    }
-
-    private func convertMenu(for file: ShelfFile) -> some View {
-        let formats = shelf.conversionOptions(for: file)
-
-        return Group {
-            if formats.isEmpty {
-                Text("No conversion")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            } else {
-                Menu {
-                    ForEach(formats) { format in
-                        Button(format.displayName) {
-                            shelf.convert(fileID: file.id, to: format)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Convert to")
-                            .font(.system(size: 10, weight: .medium))
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .semibold))
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                .menuStyle(.borderlessButton)
-                .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
             }
         }
     }
@@ -411,13 +337,17 @@ struct FileRowView: View {
     let isSelected: Bool
     let isActive: Bool
     let dragFiles: [ShelfFile]
+    let formatLabel: String
+    let conversionOptions: [ConversionFormat]
+    let isConverting: Bool
     let onToggleSelection: () -> Void
     let onActivate: () -> Void
+    let onConvert: (ConversionFormat) -> Void
     let onRemove: () -> Void
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 8) {
             Button {
                 onActivate()
                 onToggleSelection()
@@ -431,12 +361,8 @@ struct FileRowView: View {
             .help(isSelected ? "Deselect" : "Select")
 
             ZStack {
-                HStack(spacing: 9) {
-                    Image(nsImage: file.icon)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: 22, height: 22)
-                        .clipShape(RoundedRectangle(cornerRadius: file.isImage ? 4 : 0))
+                HStack(spacing: 8) {
+                    rowIcon
 
                     Text(file.name)
                         .font(.system(size: 12))
@@ -445,6 +371,8 @@ struct FileRowView: View {
                         .foregroundStyle(.primary)
 
                     Spacer()
+
+                    formatBadge
                 }
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onActivate)
@@ -452,7 +380,64 @@ struct FileRowView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            if isHovered {
+            rowActions
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(rowBackground)
+        )
+        .padding(.horizontal, 6)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onActivate)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) { isHovered = hovering }
+        }
+    }
+
+    private var rowIcon: some View {
+        Group {
+            if file.isImage {
+                Image(systemName: "photo")
+                    .font(.system(size: 13, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Color.white.opacity(0.56))
+                    .frame(width: 22, height: 22)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+            } else {
+                Image(nsImage: file.icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 20, height: 20)
+            }
+        }
+    }
+
+    private var formatBadge: some View {
+        Text(formatLabel)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(0.48))
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
+            .help("Current format")
+    }
+
+    private var rowActions: some View {
+        HStack(spacing: 6) {
+            if isConverting {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.5)
+                    .frame(width: 14, height: 14)
+                    .help("Converting")
+            } else if showsInlineActions, !conversionOptions.isEmpty {
+                convertMenu
+            }
+
+            if showsInlineActions {
                 Button(action: onRemove) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 13))
@@ -460,25 +445,37 @@ struct FileRowView: View {
                         .foregroundStyle(Color.white.opacity(0.45), Color.white.opacity(0.12))
                 }
                 .buttonStyle(.plain)
+                .help("Remove")
                 .transition(.opacity.combined(with: .scale(scale: 0.7)))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(rowBackground)
-        )
-        .padding(.horizontal, 6)
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.12)) { isHovered = hovering }
-        }
+        .frame(width: 46, alignment: .trailing)
     }
+
+    private var convertMenu: some View {
+        Menu {
+            ForEach(conversionOptions) { format in
+                Button(format.displayName) {
+                    onConvert(format)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.48))
+                .frame(width: 16, height: 16)
+        }
+        .buttonStyle(.plain)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("Convert copy")
+    }
+
+    private var showsInlineActions: Bool { isHovered || isActive }
 
     private var rowBackground: Color {
         if isSelected { return Color.white.opacity(0.10) }
-        if isActive { return Color.accentColor.opacity(0.13) }
+        if isActive { return Color.white.opacity(0.07) }
         if isHovered { return Color.white.opacity(0.06) }
         return Color.clear
     }

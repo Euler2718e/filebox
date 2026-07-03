@@ -119,7 +119,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func idealHeight(for count: Int) -> CGFloat {
-        count == 0 ? 60 : min(max(CGFloat(40 + count * 36), 156), 340)
+        count == 0 ? 60 : min(CGFloat(40 + count * 34), 340)
     }
 
     private func observeShelf() {
