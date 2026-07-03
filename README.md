@@ -2,7 +2,7 @@
 
 # FileBox
 
-A minimal floating shelf for that holds files, images, and links while you navigate to where they need to go.
+A minimal floating shelf that holds files, images, and links while you navigate to where they need to go.
 
 Moving files across folders in Finder or File Explorer means juggling two windows at once. FileBox solves this by giving you a temporary holding space: pick something up, drop it in the shelf, navigate to wherever you like, then drag it back out.
 
@@ -20,16 +20,19 @@ Once files are in the shelf, it stays visible until you clear it. If you are usi
 
 - **Auto-shows on drag** — appears only when you're actively dragging a file, image, or URL; invisible otherwise
 - **Accepts anything** — local files from Finder, images from browsers, web URLs, or anything draggable
+- **Image conversion** — convert shelved images to PNG, JPEG, HEIC, TIFF, GIF, or BMP as temporary copies
 - **Drag out to place** — drag items from the shelf directly into Finder, apps, or any drop target
 - **Multi-select** - Select one or more files at once
 - **Fixed position** — dragging files out never accidentally moves the window; grab the header strip to reposition it
-- **Finder integration** — press ⌥G to instantly grab whatever is selected in Finder or File Explorer
+- **Finder integration** — press ⌘⌥G to instantly grab whatever is selected in Finder
+- **Auto-add screenshots** — every screenshot you take drops straight into the shelf; toggle it from the menu bar
+- **No Dock icon** — lives quietly in the menu bar
 
 ---
 
 ## Requirements
 
-Currently, the app is easier to run on windows because Apple Developer License is required to publicly release this an app. However, you can run the app on macOS by installing Xcode Command Line Tools, and then cloning the repo. Build it and set the .app as open-on-launch, and you are good to go!
+Currently, the app is easier to run on Windows because an Apple Developer License is required to publicly release this as an app. However, you can run the app on macOS by installing Xcode Command Line Tools, and then cloning the repo. Build it and set the .app as open-on-launch, and you are good to go.
 To do this, you only need:
 - macOS 13 Ventura or later
 - Xcode Command Line Tools (`xcode-select --install`)
@@ -44,13 +47,15 @@ cd FileBox
 bash build-app.sh
 ```
 
-This builds a release binary, packages it as `FileBox.app`, and opens it. Drag it to `/Applications` to install permanently and add it to open-on-launch (see System Settings - General - Login Items & Extensions - *tap* '+' - FileBox.
+This builds a release binary, packages it as `FileBox.app`, and opens it. Drag it to `/Applications` to install permanently and add it to open-on-launch (see System Settings - General - Login Items & Extensions - tap `+` - FileBox).
 
 ---
 
 ## Permissions
 
-On first launch macOS will ask for **Input Monitoring** access (System Settings → Privacy & Security → Input Monitoring). This is required for the auto-show-on-drag feature. Without it, FileBox still works — use the menu bar icon or ⌥G to show it manually.
+On first launch macOS will ask for **Input Monitoring** access (System Settings → Privacy & Security → Input Monitoring). This is required for the auto-show-on-drag feature. Without it, FileBox still works — use the menu bar icon or ⌘⌥G to show it manually.
+
+When **Auto-add Screenshots** is enabled, macOS will also ask for access to your **Desktop folder** the first time a screenshot is added (the default save location for screenshots).
 
 ---
 
@@ -60,10 +65,13 @@ On first launch macOS will ask for **Input Monitoring** access (System Settings 
 |---|---|
 | Start dragging a file anywhere | Shelf appears automatically |
 | Drop onto shelf | File is stored |
+| Choose a header format | Future dropped images keep the original and add a converted copy underneath |
+| Use the right-side format menu | Convert the active image into a copied output file |
 | Drag from shelf | Pick the file back up |
 | Hover a row | Reveal ✕ to remove |
 | Click **Clear** in header | Empty the shelf |
-| ⌥G | Grab current Finder selection |
+| ⌘⌥G | Grab current Finder selection |
+| Take a screenshot | Added to the shelf automatically |
 | Menu bar icon | Manual show / clear / quit |
 
 ---

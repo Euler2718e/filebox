@@ -8,6 +8,10 @@ let package = Package(
         .executableTarget(
             name: "FileBox",
             path: "Sources/FileBox"
+        ),
+        .testTarget(
+            name: "FileBoxTests",
+            dependencies: ["FileBox"]
         )
     ]
 )
